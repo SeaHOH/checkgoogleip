@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 __author__ = 'moonshawdo@gamil.com'
 """
-验证哪些IP可以用在gogagent中
-主要是检查这个ip是否可以连通，并且证书是否为google.com
+修改：SeaHOH
+验证哪些 IP 可以用在 gogagent 中
+主要是检查这个ip是否可以连通，并且检查服务端是否为 gws
 """
 
 import os
@@ -16,6 +17,52 @@ import select
 import traceback
 import logging
 import random
+
+#最大IP延时，单位毫秒
+g_maxhandletimeout = 1500
+#需要得到的可用IP数量
+g_maxhandleipcnt = 10
+#每轮扫描的IP数量
+g_maxthreads = 4
+
+#连接超时设置，单位秒
+g_conntimeout = 3
+g_handshaketimeout = 5
+#SSL 连接：0使用 OpenSSL，1使用 gevent
+g_usegevent = 1
+
+g_filedir = os.path.dirname(__file__)
+g_cacertfile = os.path.join(g_filedir, "cacert.pem")
+g_ipfile = os.path.join(g_filedir, "ip.txt")
+g_tmpnotfile = os.path.join(g_filedir, "ip_tmpnot.txt")
+g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
+g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
+g_exttraipfile = os.path.join(g_filedir,"eip.txt")
+
+#是否自动删除文件，0不删除，1删除
+#记录查询成功的非google的IP
+#文件名：ip_tmpnot.txt，格式：ip 连接与握手时间 ssl域名
+g_autodeltmpnotfile = 0
+#记录查询成功的google的IP
+#文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名
+g_autodeltmpokfile = 1
+#记录查询失败的IP
+#ip_tmperror.txt，格式：ip
+g_autodeltmperrorfile = 0
+
+"""
+ip_str_list为需要查找的IP地址，第一组的格式：
+1.xxx.xxx.xxx.xxx-xxx.xxx.xxx.xxx
+2.xxx.xxx.xxx.xxx/xx
+3.xxx.xxx.xxx.
+4 xxx.xxx.xxx.xxx
+5 xxx.xxx.xxx.xxx-xxx
+
+组与组之间可以用换行相隔开,第一行中IP段可以用'|'或','
+获取随机IP是每组依次获取随机个数量的，因此一组的IP数越少，越有机会会检查，当然获取随机IP会先排除上次查询失败的IP
+"""
+ip_str_list = '''
+'''
 
 PY3 = False
 if sys.version_info[0] == 3:
@@ -35,7 +82,6 @@ import time
 from time import sleep
  
 g_useOpenSSL = 1
-g_usegevent = 1
 if g_usegevent == 1:
     try:
         from gevent import monkey
@@ -57,146 +103,14 @@ if g_useOpenSSL == 1:
 else:
     SSLError = ssl.SSLError
 
-
-"""
-ip_str_list为需要查找的IP地址，第一组的格式：
-1.xxx.xxx.xxx.xxx-xx.xxx.xxx.xxx
-2.xxx.xxx.xxx.xxx/xx
-3.xxx.xxx.xxx.
-4 xxx.xxx.xxx.xxx
-5 xxx.xxx.xxx.xxx-xxx
-
-组与组之间可以用换行相隔开,第一行中IP段可以用'|'或','
-获取随机IP是每组依次获取随机个数量的，因此一组的IP数越少，越有机会会检查，当然获取随机IP会先排除上次查询失败的IP
-"""
-ip_str_list = '''
-218.189.25.166-218.189.25.187|121.78.74.80-121.78.74.88|178.45.251.84-178.45.251.123|210.61.221.148-210.61.221.187
-61.219.131.84-61.219.131.251|202.39.143.84-202.39.143.123|203.66.124.148-203.66.124.251|203.211.0.20-203.211.0.59
-60.199.175.18-60.199.175.187|218.176.242.20-218.176.242.251|203.116.165.148-203.116.165.251|203.117.34.148-203.117.34.187
-210.153.73.20-210.153.73.123|106.162.192.148-106.162.192.187|106.162.198.84-106.162.198.123|106.162.216.20-106.162.216.123
-210.139.253.20-210.139.253.251|111.168.255.20-111.168.255.187|203.165.13.210-203.165.13.251
-61.19.1.30-61.19.1.109|74.125.31.33-74.125.31.60|210.242.125.20-210.242.125.59|203.165.14.210-203.165.14.251
-216.239.32.0/19
-64.233.160.0/19
-66.249.80.0/20
-72.14.192.0/18
-209.85.128.0/17
-66.102.0.0/20
-74.125.0.0-74.125.31.255
-74.125.32.0-74.125.63.255
-74.125.64.0-74.125.95.255
-74.125.96.0-74.125.127.255
-74.125.128.0-74.125.159.255
-74.125.160.0-74.125.191.255
-74.125.192.0-74.125.223.255
-74.125.224.0-74.125.255.255
-64.18.0.0/20
-207.126.144.0/20
-173.194.0.0-173.194.31.255
-173.194.32.0-173.194.63.255
-173.194.64.0-173.194.95.255
-173.194.96.0-173.194.127.255
-173.194.128.0-173.194.159.255
-173.194.160.0-173.194.191.255
-173.194.192.0-173.194.223.255
-173.194.224.0-173.194.255.255
-1.179.248.0-255
-106.162.192.148-187
-108.166.34.0-255
-118.174.24.0-255
-118.174.25.0-255
-118.174.26.0-255
-118.174.27.0-255
-121.195.178.0-255
-121.78.74.68-123
-123.205.250.0-255
-123.205.251.68-123
-124.160.89.0-255
-130.211.115.0-255
-130.211.76.0-255
-130.211.78.0-255
-130.211.82.0-255
-146.148.16.0-255
-146.148.24.0-255
-146.148.34.0-255
-146.148.8.0-255
-146.148.9.0-255
-178.60.128.1-63
-193.120.166.64-127
-193.92.133.0-63
-194.78.20.16-31
-194.78.99.0-255
-195.249.20.192-255
-202.106.93.0-255
-202.39.143.1-123
-202.69.26.0-255
-203.66.124.129-251
-208.117.224.0-208.117.229.255
-208.117.230.0-208.117.239.55
-208.117.240.0-208.117.255.255
-209.85.228.0-255
-210.242.125.20-59
-212.188.15.0-255
-213.186.229.0-63
-213.240.44.0-31
-218.176.242.0-255
-24.156.131.0-255
-41.206.96.0-255
-62.116.207.0-63
-62.197.198.193-251
-64.15.112.0-64.15.117.255
-64.15.119.0-64.15.126.255
-64.233.160.0-255
-64.233.168.0-255
-64.233.171.0-255
-66.102.133.0-255
-66.102.136.0-255
-66.102.255.0-255
-80.228.65.128-191
-81.175.29.128-191
-84.235.77.0-255
-85.182.250.0-255
-86.127.118.128-191
-93.183.211.192-255
-93.94.217.0-31
-93.94.218.0-31
-94.200.103.64-71
-94.40.70.0-63
-'''
-
-
-#最大IP延时，单位毫秒
-g_maxhandletimeout = 1800
-#最大可用IP数量
-g_maxhandleipcnt = 50
-
-"连接超时设置"
-g_conntimeout = 5
-g_handshaketimeout = 7
-
-g_filedir = os.path.dirname(__file__)
-g_cacertfile = os.path.join(g_filedir, "cacert.pem")
-g_ipfile = os.path.join(g_filedir, "ip.txt")
-g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
-g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
-g_exttraipfile = os.path.join(g_filedir,"extraip.txt")
-
-g_maxthreads = 90
-
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 128
 
-g_ssldomain = ("google.com",)
+#g_ssldomain = ("google.com",)
+g_ssldomain = ()
 g_excludessdomain=()
 
-
-"是否自动删除记录查询成功的非google的IP文件，方便下次跳过连接，0为不删除，1为删除"
-"文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名"
-g_autodeltmpokfile = 0
-"是否自动删除记录查询失败的IP文件，0为不删除，1为删除"
-"ip_tmperror.txt，格式：ip"
-g_autodeltmperrorfile = 0
 
 logging.basicConfig(format="[%(threadName)s]%(message)s",level=logging.INFO)
 
@@ -246,37 +160,48 @@ def getgooglesvrnamefromheader(header):
     return ""
 
 class TCacheResult(object):
-    __slots__ = ["oklist","failiplist","oklock","errlock","okfile","errorfile","validipcnt","filegwsipset"]
+    __slots__ = ["oklist","failiplist","notlock","oklock","errlock","notfile","okfile","errorfile","validipcnt"]
     def __init__(self):
         self.oklist = list()
         self.failiplist = list()
+        self.notlock = threading.Lock()
         self.oklock = threading.Lock()
         self.errlock = threading.Lock()
+        self.notfile = None
         self.okfile = None
         self.errorfile = None
         self.validipcnt = 0
-        self.filegwsipset = set()
     
     def addOKIP(self,costtime,ip,ssldomain,gwsname):
         bOK = False
-        try:
-            self.oklock.acquire()
-            if checkvalidssldomain(ssldomain,gwsname):
-                bOK = True
-                self.oklist.append((costtime,ip,ssldomain,gwsname))
-            if ip not in self.filegwsipset:
+        if checkvalidssldomain(ssldomain,gwsname):
+            bOK = True
+            self.oklist.append((costtime,ip,ssldomain,gwsname))
+            try:
+                self.oklock.acquire()
                 if self.okfile is None:
                     self.okfile = open(g_tmpokfile,"a+",0)
                 self.okfile.seek(0,2)
                 line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
                 self.okfile.write(line)
-            if bOK and costtime <= g_maxhandletimeout:
-                self.validipcnt += 1
-                return bOK,self.validipcnt
-            else:
-                return bOK,0
-        finally:
-            self.oklock.release()
+                if bOK and costtime <= g_maxhandletimeout:
+                    self.validipcnt += 1
+                    return 1,self.validipcnt
+                else:
+                    return 0,self.validipcnt
+            finally:
+                self.oklock.release()
+        else:
+            try:
+                self.notlock.acquire()
+                if self.notfile is None:
+                    self.notfile = open(g_tmpnotfile,"a+",0)
+                self.notfile.seek(0,2)
+                line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
+                self.notfile.write(line)
+                return 0,self.validipcnt
+            finally:
+                self.notlock.release()
             
     def addFailIP(self,ip):
         try:
@@ -292,6 +217,9 @@ class TCacheResult(object):
             self.errlock.release() 
     
     def close(self):
+        if self.notfile:
+            self.notfile.close()
+            self.notfile = None
         if self.okfile:
             self.okfile.close()
             self.okfile = None
@@ -306,45 +234,50 @@ class TCacheResult(object):
         nLen = len(self.failiplist)
         if nLen > 0 :
             self.failiplist = list()
-            PRINT( "%d ip timeout" % nLen )
+            PRINT("=====================================================================")
+            PRINT( u"                             %d IP 超时" % nLen )
+
 
     def loadLastResult(self):
+        notresult  = set()
         okresult  = set()
         errorresult = set()
+        if os.path.exists(g_tmpnotfile):
+            with open(g_tmpnotfile,"r") as fd:
+                for line in fd:
+                    ips = line.strip("\r\n").split(" ")
+                    notresult.add(from_string(ips[0]))
         if os.path.exists(g_tmpokfile):
             with open(g_tmpokfile,"r") as fd:
                 for line in fd:
                     ips = line.strip("\r\n").split(" ")
-                    if len(ips) < 3:
-                        continue
+                    okresult.add(from_string(ips[0]))
                     gwsname = ""
+                    costtime = int(ips[1])
                     if len(ips) > 3:
                         gwsname = ips[3]
-                    ipint = from_string(ips[0])
-                    if not checkvalidssldomain(ips[2],gwsname):
-                        okresult.add(ipint)
-                        if ips[0] in self.filegwsipset:
-                            self.filegwsipset.remove(ips[0])
-                    else:
-                        self.filegwsipset.add(ips[0])
-                        if ipint in okresult:
-                            okresult.remove(ipint)
+                    self.oklist.append((costtime,ips[0],ips[2],gwsname))
+                    if costtime <= g_maxhandletimeout:
+                        self.validipcnt += 1
         if os.path.exists(g_tmperrorfile):
             with open(g_tmperrorfile,"r") as fd:
                 for line in fd:
                     ips = line.strip("\r\n").split(" ")
                     for item in ips:
                         errorresult.add(from_string(item))
-        return okresult,errorresult
+        return notresult,okresult,errorresult
     
     def clearFile(self):
         self.close()
+        if g_autodeltmpnotfile and os.path.exists(g_tmpnotfile):
+            os.remove(g_tmpnotfile)
+            PRINT(u"删除文件 %s" % g_tmpnotfile)
         if g_autodeltmpokfile and os.path.exists(g_tmpokfile):
             os.remove(g_tmpokfile)
-            PRINT("remove file %s" % g_tmpokfile)
+            PRINT(u"删除文件 %s" % g_tmpokfile)
         if g_autodeltmperrorfile and os.path.exists(g_tmperrorfile):
             os.remove(g_tmperrorfile)
-            PRINT("remove file %s" % g_tmperrorfile)
+            PRINT(u"删除文件 %s" % g_tmperrorfile)
             
     def queryfinish(self):
         try:
@@ -371,7 +304,7 @@ class my_ssl_wrap(object):
                 return
             my_ssl_wrap.ssl_cxt = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
             my_ssl_wrap.ssl_cxt.set_timeout(g_handshaketimeout)
-            PRINT("init ssl context ok")
+            PRINT(u"ssl 环境初始化完毕")
         except Exception:
             raise
         finally:
@@ -419,16 +352,15 @@ class my_ssl_wrap(object):
                         domain = subject[1]
                         haserror = 0
                 if domain is None:
-                    PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
+                    PRINT(u"%s 无法获取 CN：%s " % (ip, cert.get_subject().get_components()))
                 #尝试发送http请求，获取回应头部的Server字段
-                #if domain is None or isgoolgledomain(domain) == 2:
-                if True:
+                if domain is None or isgoolgledomain(domain) == 2:
                     cur_time = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
-                        domain = "null"
+                        domain="defaultgws"
                 return domain, costtime,timeout,gwsname
             else:
                 s.settimeout(g_conntimeout)
@@ -452,16 +384,15 @@ class my_ssl_wrap(object):
                                     domain = item[1]
                                 haserror = 0
                     if domain is None:
-                        PRINT("%s can not get commonName: %s " % (ip, subjectitems))
+                        PRINT(u"%s 无法获取 commonName：%s " % (ip, subjectitems))
                 #尝试发送http请求，获取回应头部的Server字段
-                #if domain is None or isgoolgledomain(domain) == 2:
-                if True:
+                if domain is None or isgoolgledomain(domain) == 2:
                     cur_time = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
-                        domain = "null"
+                        domain="defaultgws"
                 return domain, costtime,timeout,gwsname
         except SSLError as e:
             time_end = time.time()
@@ -469,7 +400,7 @@ class my_ssl_wrap(object):
             if str(e).endswith("timed out"):
                 timeout = 1
             else:
-                PRINT("SSL Exception(%s): %s, times:%d ms " % (ip, e, costtime))
+                PRINT(u"SSL Exception(%s)：%s，耗时：%d ms " % (ip, e, costtime))
             return domain, costtime,timeout,gwsname
         except IOError as e:
             time_end = time.time()
@@ -477,12 +408,12 @@ class my_ssl_wrap(object):
             if str(e).endswith("timed out"):
                 timeout = 1
             else:
-                PRINT("Catch IO Exception(%s): %s, times:%d ms " % (ip, e, costtime))
+                PRINT(u"Catch IO Exception(%s)：%s 耗时：%d ms " % (ip, str(e).decode("gbk"), costtime))
             return domain, costtime,timeout,gwsname
         except Exception as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
-            PRINT("Catch Exception(%s): %s, times:%d ms " % (ip, e, costtime))
+            PRINT(u"Catch Exception(%s)：%s 耗时：%d ms " % (ip, str(e).decode("gbk"), costtime))
             return domain, costtime,timeout,gwsname
         finally:
             if g_useOpenSSL:
@@ -514,7 +445,7 @@ class my_ssl_wrap(object):
                 end = time.time()
                 costime = int(end-begin)
                 if costime >= g_conntimeout:
-                    PRINT("get http response timeout(%ss),ip:%s,cnt:%d" % (costime,ip,trycnt) )
+                    PRINT(u"获取 http 响应超时(%ss)，ip：%s，数量：%d" % (costime,ip,trycnt) )
                     return ""
                 trycnt += 1
                 infds, outfds, errfds = select.select([sock, ], [], [], conntimeout)
@@ -568,15 +499,10 @@ class Ping(threading.Thread):
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
-                (ssldomain, costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
+                (ssldomain,costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
-                    gwsip,cnt = self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
-                    if cnt != 0:
-                        PRINT("ip: %s,CN: %s,svr: %s,ok:1,cnt:%d" % (ipaddr, ssldomain,gwsname,cnt))
-                    elif gwsip:
-                        PRINT("ip: %s,CN: %s,svr: %s,t:%dms,ok:0" % (ipaddr, ssldomain,gwsname,costtime))
-                    else:
-                        PRINT("ip: %s,CN: %s,svr: %s,ok:0" % (ipaddr, ssldomain,gwsname))
+                    ok,cnt = self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
+                    PRINT(u"延迟：%s %s %s 服务端：%s 可用：%s 数量：%d" % (costtime,ipaddr,ssldomain,gwsname,ok,cnt))
                 elif ssldomain is None:
                     self.cacheResult.addFailIP(ipaddr)
             except Empty:
@@ -612,13 +538,16 @@ class RamdomIP(threading.Thread):
         self.hadaddipcnt = 0
         
     def ramdomip(self):
-        lastokresult,lasterrorresult = self.cacheResult.loadLastResult()
+        lastnotresult,lastokresult,lasterrorresult = self.cacheResult.loadLastResult()
+        notlen = len(lastnotresult)
+        oklen = len(lastokresult)
+        errorlen = len(lasterrorresult)
+        totalcachelen = notlen + oklen + errorlen
+        if totalcachelen != 0:
+            PRINT(u"载入上次结果完毕。可用数：%d，不可用数：%d，错误数：%d" % (oklen,notlen,errorlen) )
         iplineslist = re.split("\r|\n", ip_str_list)
-        skipokcnt = 0
-        skiperrocnt = 0
         iplinelist = []
-        totalipcnt = 0
-        cacheip = lastokresult | lasterrorresult
+        cacheip = lastnotresult | lastokresult | lasterrorresult
         if os.path.exists(g_exttraipfile):
             try:
                 fp = open(g_exttraipfile,"r")
@@ -627,9 +556,9 @@ class RamdomIP(threading.Thread):
                     iplineslist.append(line.strip("\r\n"))
                     linecnt += 1
                 fp.close()
-                PRINT("load extra ip ok,line:%d" % linecnt )
+                PRINT(u"载入自定义 IP 完毕。行数：%d" % linecnt )
             except Exception as e:
-                PRINT("load extra ip file error:%s " % str(e) )
+                PRINT(u"载入自定义 IP 错误：%s " % str(e) )
         for iplines in iplineslist:
             if len(iplines) == 0 or iplines[0] == '#':
                 continue
@@ -640,7 +569,7 @@ class RamdomIP(threading.Thread):
                     continue
                 begin, end = splitip(line)
                 if checkipvalid(begin) == 0 or checkipvalid(end) == 0:
-                    PRINT("ip format is error,line:%s, begin: %s,end: %s" % (line, begin, end))
+                    PRINT(u"ip 格式错误，行：%s，起始：%s，结束：%s" % (line, begin, end))
                     continue
                 nbegin = from_string(begin)
                 nend = from_string(end)
@@ -712,11 +641,12 @@ class RamdomIP(threading.Thread):
             evt_ipramdomstart.set()
         
     def run(self):
-        PRINT("begin to get ramdom ip")
+        PRINT(u"开始获取随机 IP")
         self.ramdomip()
         evt_ipramdomend.set()
         qsize = self.ipqueue.qsize()
-        PRINT("ramdom ip thread stopped.had check ip: %d,rest ip queue size: %d" % (self.hadaddipcnt - qsize,qsize))
+        PRINT(u"随机 IP 线程已结束。已检查 IP 数：%d，剩余 IP 数：%d" % (self.hadaddipcnt - qsize,qsize))
+        PRINT("====================================================================")
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
@@ -788,7 +718,8 @@ def dumpstacks():
 def checksingleprocess(ipqueue,cacheResult,max_threads):
     threadlist = []
     threading.stack_size(96 * 1024)
-    PRINT('need create max threads count: %d' % (max_threads))
+    PRINT(u'需要创建的最大线程数：%d' % (max_threads))
+    PRINT("=====================================================================")
     for i in xrange(1, max_threads + 1):
         ping_thread = Ping(ipqueue,cacheResult)
         ping_thread.setDaemon(True)
@@ -808,18 +739,12 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
 
 def list_ping():
     if g_useOpenSSL == 1:
-        PRINT("support PyOpenSSL")
+        PRINT(u"支持 PyOpenSSL")
     if g_usegevent == 1:
-        PRINT("support gevent")
+        PRINT(u"支持 gevent")
 
     checkqueue = Queue()
     cacheResult = TCacheResult()
-    lastokresult,lasterrorresult = cacheResult.loadLastResult()
-    oklen = len(lastokresult)
-    errorlen = len(lasterrorresult)
-    totalcachelen = oklen + errorlen
-    if totalcachelen != 0:
-        PRINT("load last result,ok cnt:%d,error cnt: %d" % (oklen,errorlen) )
     
     ramdomip_thread = RamdomIP(checkqueue,cacheResult)
     ramdomip_thread.setDaemon(True)
@@ -830,24 +755,28 @@ def list_ping():
     ip_list = cacheResult.getIPResult()
     ip_list.sort()
 
-    PRINT('try to collect ssl result')
+    PRINT(u'                           开始整理结果')
     op = 'wb'
-    if sys.version_info[0] == 3:
+    if PY3:
         op = 'w'
     ff = open(g_ipfile, op)
     ncount = 0
+    PRINT("=====================================================================")
+    PRINT(u" 延迟(ms)         IP         服务端          证书")
     for ip in ip_list:
         domain = ip[2]
-        if ip[0] > g_maxhandletimeout :
-            break        
-        PRINT("[%s] %d ms,domain: %s,svr:%s" % (ip[1], ip[0], domain,ip[3]))
-        if domain is not None:
+        # 只写入低于指定响应时间的IP
+        if domain is not None and ip[0] <= g_maxhandletimeout:
+            PRINT(u"   %s    %s    %s      %s" % (str(ip[0]).rjust(4), ip[1].ljust(15), ip[3], domain))
+            if ncount > 0:
+                ff.write("|")
             ff.write(ip[1])
-            ff.write("|")
             ncount += 1
-    PRINT("write to file %s ok,count:%d " % (g_ipfile, ncount))
+    PRINT(u"文件 %s 写入完毕，IP 数量：%d " % (g_ipfile, ncount))
     ff.close()
-    cacheResult.clearFile()
+    #未达到需要的IP数量时不清除临时文件，以便修改参数后复用数据
+    if ncount >= g_maxhandleipcnt:
+        cacheResult.clearFile()
 
 
 if __name__ == '__main__':
