@@ -4,7 +4,7 @@ __author__ = 'moonshawdo@gamil.com'
 """
 修改：SeaHOH
 验证哪些 IP 可以用在 gogagent 中
-主要是检查这个ip是否可以连通，并且检查服务端是否为 gws
+主要是检查这个ip是否可以连通，并检查服务端是否为 gws
 """
 
 import os
@@ -21,9 +21,9 @@ import random
 #最大IP延时，单位毫秒
 g_maxhandletimeout = 1500
 #需要得到的可用IP数量
-g_maxhandleipcnt = 10
+g_maxhandleipcnt = 100
 #每轮扫描的IP数量
-g_maxthreads = 4
+g_maxthreads = 16
 
 #连接超时设置，单位秒
 g_conntimeout = 3
@@ -45,7 +45,7 @@ g_exttraipfile = os.path.join(g_filedir,"eip.txt")
 g_autodeltmpnotfile = 0
 #记录查询成功的google的IP
 #文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名
-g_autodeltmpokfile = 1
+g_autodeltmpokfile = 0
 #记录查询失败的IP
 #ip_tmperror.txt，格式：ip
 g_autodeltmperrorfile = 0
@@ -107,7 +107,7 @@ else:
 if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 128
 
-#g_ssldomain = ("google.com",)
+#g_ssldomain = ("*.google.com",)
 g_ssldomain = ()
 g_excludessdomain=()
 
@@ -131,7 +131,7 @@ def isgoolgledomain(domain):
 
 def isgoogleserver(svrname):
     lowerdomain = svrname.lower()
-    if lowerdomain == "gws":
+    if lowerdomain == "gws" or lowerdomain == "gvs 1.0":
         return True
     else:
         return False
@@ -160,10 +160,11 @@ def getgooglesvrnamefromheader(header):
     return ""
 
 class TCacheResult(object):
-    __slots__ = ["oklist","failiplist","notlock","oklock","errlock","notfile","okfile","errorfile","validipcnt"]
+    __slots__ = ["oklist","failipcnt","notipcnt","notlock","oklock","errlock","notfile","okfile","errorfile","validipcnt","lowvalidipcnt"]
     def __init__(self):
         self.oklist = list()
-        self.failiplist = list()
+        self.failipcnt = 0
+        self.notipcnt = 0
         self.notlock = threading.Lock()
         self.oklock = threading.Lock()
         self.errlock = threading.Lock()
@@ -171,6 +172,7 @@ class TCacheResult(object):
         self.okfile = None
         self.errorfile = None
         self.validipcnt = 0
+        self.lowvalidipcnt = 0
     
     def addOKIP(self,costtime,ip,ssldomain,gwsname):
         bOK = False
@@ -188,6 +190,7 @@ class TCacheResult(object):
                     self.validipcnt += 1
                     return 1,self.validipcnt
                 else:
+                    self.lowvalidipcnt += 1
                     return 0,self.validipcnt
             finally:
                 self.oklock.release()
@@ -199,6 +202,7 @@ class TCacheResult(object):
                 self.notfile.seek(0,2)
                 line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
                 self.notfile.write(line)
+                self.notipcnt += 1
                 return 0,self.validipcnt
             finally:
                 self.notlock.release()
@@ -210,9 +214,7 @@ class TCacheResult(object):
                 self.errorfile = open(g_tmperrorfile,"a+",0)
             self.errorfile.seek(0,2)
             self.errorfile.write(ip+"\n")
-            self.failiplist.append(ip)
-            if len(self.failiplist) > 128:
-                self.flushFailIP()
+            self.failipcnt += 1
         finally:
             self.errlock.release() 
     
@@ -229,13 +231,6 @@ class TCacheResult(object):
        
     def getIPResult(self):
         return self.oklist
-    
-    def flushFailIP(self):
-        nLen = len(self.failiplist)
-        if nLen > 0 :
-            self.failiplist = list()
-            PRINT("=====================================================================")
-            PRINT( u"                             %d IP 超时" % nLen )
 
 
     def loadLastResult(self):
@@ -304,7 +299,7 @@ class my_ssl_wrap(object):
                 return
             my_ssl_wrap.ssl_cxt = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
             my_ssl_wrap.ssl_cxt.set_timeout(g_handshaketimeout)
-            PRINT(u"ssl 环境初始化完毕")
+            PRINT(u"SSL 环境初始化完毕")
         except Exception:
             raise
         finally:
@@ -646,7 +641,8 @@ class RamdomIP(threading.Thread):
         evt_ipramdomend.set()
         qsize = self.ipqueue.qsize()
         PRINT(u"随机 IP 线程已结束。已检查 IP 数：%d，剩余 IP 数：%d" % (self.hadaddipcnt - qsize,qsize))
-        PRINT("====================================================================")
+        print self.getName()
+        PRINT("="*68)
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
@@ -719,7 +715,7 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
     threadlist = []
     threading.stack_size(96 * 1024)
     PRINT(u'需要创建的最大线程数：%d' % (max_threads))
-    PRINT("=====================================================================")
+    PRINT("="*69)
     for i in xrange(1, max_threads + 1):
         ping_thread = Ping(ipqueue,cacheResult)
         ping_thread.setDaemon(True)
@@ -750,19 +746,21 @@ def list_ping():
     ramdomip_thread.setDaemon(True)
     ramdomip_thread.start()
     checksingleprocess(checkqueue,cacheResult,g_maxthreads)
-    
-    cacheResult.flushFailIP()
+
     ip_list = cacheResult.getIPResult()
     ip_list.sort()
 
-    PRINT(u'                           开始整理结果')
+    PRINT("="*69)
+    PRINT(" "*21+u"开始整理本次测试结果")
+    #PRINT(u"%s %d IP 超时" % (" "*(26-len(str(cacheResult.failipcnt))/2), cacheResult.failipcnt))
+    PRINT(u"合格可用数：%d，不合格数：%d，不可用数：%d，错误数：%d" % (cacheResult.validipcnt, cacheResult.lowvalidipcnt, cacheResult.notipcnt, cacheResult.failipcnt) )
+    PRINT("="*69)
+    PRINT(u" 延迟(ms)         IP         服务端          证书")
     op = 'wb'
     if PY3:
         op = 'w'
     ff = open(g_ipfile, op)
     ncount = 0
-    PRINT("=====================================================================")
-    PRINT(u" 延迟(ms)         IP         服务端          证书")
     for ip in ip_list:
         domain = ip[2]
         # 只写入低于指定响应时间的IP
@@ -773,6 +771,7 @@ def list_ping():
             ff.write(ip[1])
             ncount += 1
     PRINT(u"文件 %s 写入完毕，IP 数量：%d " % (g_ipfile, ncount))
+    print threading.current_thread().name
     ff.close()
     #未达到需要的IP数量时不清除临时文件，以便修改参数后复用数据
     if ncount >= g_maxhandleipcnt:
