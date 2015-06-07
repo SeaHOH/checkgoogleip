@@ -250,7 +250,7 @@ class TCacheResult(object):
                     gwsname = ""
                     costtime = int(ips[1])
                     if len(ips) > 3:
-                        gwsname = ips[3]
+                        gwsname = " ".join(ips[3:])
                     self.oklist.append((costtime,ips[0],ips[2],gwsname))
                     if costtime <= g_maxhandletimeout:
                         self.validipcnt += 1
